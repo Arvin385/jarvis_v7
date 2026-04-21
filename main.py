@@ -7,7 +7,7 @@
 # All responses are to be returned to the original client in the same form in which the prompt was recieved:
 # If through STT-> return with TTS. If through plain text-> return with plain text.
 
-from llm import generate_loq, generate_phone, generate_xenbook
+from llm import generate_local, generate_loq, generate_phone, generate_xenbook, SYSTEM_PROMPT, CLASSIFIER_PROMPT, parse_classifier_output
 import json
 
 #print(generate_xenbook("hi whats up?"))
@@ -19,11 +19,13 @@ print("Jarvis Initialized.")
 while True:
     prompt = input(">> ")
     
-    raw = generate_xenbook(prompt, "classifer")
-    data = json.loads(raw)
-    mode = data["mode"]
-
+    raw = generate_xenbook(prompt, CLASSIFIER_PROMPT)
+    print(raw)
+    parsed = parse_classifier_output(raw)
+    print(parsed)
+    mode = parsed
+    
     if mode == "SIMPLE":
-        print(generate_xenbook(prompt, "jarvis"))
+        print(generate_local(prompt, SYSTEM_PROMPT))
     else:
-        print("Jarvis is not capable of complex queries yet!")
+        print(generate_loq(prompt, SYSTEM_PROMPT))

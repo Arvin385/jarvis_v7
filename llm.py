@@ -39,6 +39,8 @@ import os
 XENBOOK_URL = os.getenv("XENBOOK_URL", "http://100.100.22.99:11434")
 PHONE_URL = os.getenv("PHONE_URL", "http://100.97.33.1:11434")
 LOQ_URL = os.getenv("LOQ_URL", "http://100.69.245.107:11434")
+DEVICE_ROLE = os.getenv("DEVICE_ROLE", "phone")
+LOCAL_URL = "http://localhost:11434"
 
 XENBOOK_MODEL = "gemma2:2b"
 PHONE_MODEL = "llama3.2:1b"
@@ -104,6 +106,7 @@ Return ONLY a valid JSON object:
 or 
 {"mode": "COMPLEX"}
 
+Your response must be valid JSON parsable by json.loads() without preprocessing.
 No explanation. No extra text.
 
 ---
@@ -111,9 +114,11 @@ No explanation. No extra text.
 Definitions:
 
 SIMPLE:
-- Can be answered with a single, direct LLM response
+- The final result of the user's query can be satisfied with a single, direct LLM response
 - Does NOT require multi-step reasoning, planning, or tool use
 - Does NOT require iterative refinement
+- Does NOT require access or information from sources or tools other than your pretrained data.
+  - Does not need access to email, internet, local files, communication, or terminal.
 - Examples:
   - factual questions
   - short explanations
@@ -126,6 +131,8 @@ COMPLEX:
 - Would benefit from deeper analysis or structured thinking
 - May require tools, decomposition, or multiple steps
 - Examples:
+  - requiring tangible interaction with the internet, local device, or cloud. 
+  - Sending emails, accessing local or cloud files, intra-device and inter-device communication. 
   - designing systems or architectures
   - debugging non-trivial issues
   - strategy, optimization, or tradeoff analysis
@@ -134,7 +141,6 @@ COMPLEX:
 ---
 
 Rules:
-- Be conservative: prefer SIMPLE unless clearly COMPLEX
 - Ignore style, tone, or personality
 - Focus ONLY on task complexity
 - Do NOT consider latency or device constraints
@@ -170,33 +176,66 @@ def _chat(base_url, model, prompt, system_prompt):
 
 def generate_xenbook(prompt: str, system: str) -> str:
     print("xenbook:")
-    if system == "jarvis":
-        SYSTEM = SYSTEM_PROMPT
-    elif system == "classifier":
-        SYSTEM = CLASSIFIER_PROMPT
-    else:
-        print("ERROR: Select a System Prompt")
-
-    return _chat(XENBOOK_URL, XENBOOK_MODEL, prompt, SYSTEM)
+    return _chat(XENBOOK_URL, XENBOOK_MODEL, prompt, system)
 
 def generate_phone(prompt: str, system: str) -> str:
     print("phone:")
-    if system == "jarvis":
-        SYSTEM = SYSTEM_PROMPT
-    elif system == "classifier":
-        SYSTEM = CLASSIFIER_PROMPT
-    else:
-        print("ERROR: Select a System Prompt")
-
-    return _chat(PHONE_URL, PHONE_MODEL, prompt, SYSTEM)
+    return _chat(PHONE_URL, PHONE_MODEL, prompt, system)
 
 def generate_loq(prompt: str,  system: str) -> str:
     print("loq:")
-    if system == "jarvis":
-        SYSTEM = SYSTEM_PROMPT
-    elif system == "classifier":
-        SYSTEM = CLASSIFIER_PROMPT
-    else:
-        print("ERROR: Select a System Prompt")
+    return _chat(LOQ_URL, LOQ_MODEL, prompt, system)
 
-    return _chat(LOQ_URL, LOQ_MODEL, prompt, SYSTEM)
+def generate_local(prompt: str,  system: str) -> str:
+    print("local:")
+    if DEVICE_ROLE == "xenbook":
+        model = XENBOOK_MODEL
+    else:
+        model = PHONE_MODEL
+    print(model)
+    return _chat(LOCAL_URL, model, prompt, system)
+
+import json
+import re
+
+def parse_classifier_output(raw: str) -> str:
+    """
+    Extracts SIMPLE or COMPLEX from messy LLM output.
+    Handles:
+    - ```json { ... } ```
+    - raw JSON
+    - extra text before/after JSON
+    """
+
+    if not raw:
+        return "SIMPLE"
+
+    text = raw.strip()
+
+    # 1. Try to extract JSON block inside ``` ```
+    fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+    if fence_match:
+        text = fence_match.group(1)
+
+    # 2. Fallback: extract first JSON object anywhere
+    if not text.startswith("{"):
+        match = re.search(r"\{.*\}", text, re.S)
+        if match:
+            text = match.group(0)
+
+    # 3. Parse JSON safely
+    try:
+        obj = json.loads(text)
+        mode = obj.get("mode", "SIMPLE").upper()
+    except Exception:
+        # 4. Final fallback: keyword scan
+        upper = raw.upper()
+        if "COMPLEX" in upper:
+            return "COMPLEX"
+        return "SIMPLE"
+
+    # 5. Normalize output
+    if mode not in ("SIMPLE", "COMPLEX"):
+        return "SIMPLE"
+
+    return mode
