@@ -8,6 +8,14 @@
 # If through STT-> return with TTS. If through plain text-> return with plain text.
 
 from llm import generate_loq, generate_phone, generate_xenbook
-print(generate_xenbook("hi whats up?"))
+#print(generate_xenbook("hi whats up?"))
 #print(generate_loq("hi whats up?"))
 #print(generate_phone("hi whats up?"))
+
+print("Jarvis Initialized.")
+
+while True:
+    prompt = input(">> ")
+    
+    
+    print(generate_xenbook(prompt))
