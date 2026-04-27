@@ -8,6 +8,10 @@
 # If through STT-> return with TTS. If through plain text-> return with plain text.
 
 from llm import generate_local, generate_loq, generate_phone, generate_xenbook, SYSTEM_PROMPT, CLASSIFIER_PROMPT, parse_classifier_output
+from memory_pipeline import process_input, build_prompt
+from memory_store import save_memory
+from memory_retrieval import retrieve_relevant
+
 import json
 
 #print(generate_xenbook("hi whats up?"))
@@ -20,12 +24,24 @@ while True:
     prompt = input(">> ")
     
     raw = generate_xenbook(prompt, CLASSIFIER_PROMPT)
+    
     print(raw)
     parsed = parse_classifier_output(raw)
     print(parsed)
     mode = parsed
     
-    if mode == "SIMPLE":
+    context = retrieve_relevant(prompt)
+
+    full_prompt = build_prompt(prompt, context)
+
+
+    if mode == "SIMPLE":   
+        # fetch relevant memory
+        memory = process_input(prompt)
+        if memory:
+            save_memory(memory)
         print(generate_local(prompt, SYSTEM_PROMPT))
+    
     else:
+        # Complex
         print(generate_loq(prompt, SYSTEM_PROMPT))
