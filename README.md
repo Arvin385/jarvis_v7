@@ -23,21 +23,20 @@ Note: From here on out, I will refer to my personal laptop as "xenbook" and my g
 #### Processing paths:
 
 Phone: Prompt --> Local Phone LLM classifier --simple--> Unified Memory --> Xenbook LLM generation --> Voice/Text  
-                                            |                                                              ^  
-                                         complex        ___________________________________________________|
-                                            |           |
-                                            v           |
-                                        LOQ Reason/Action Loop <==> Tools
+                                            |         
+                                         complex
+                                            |           
+                                            v           
+                                        LOQ Reason/Action Loop <==> Tools --> Voice/Text
 
 
 
 Xenbook: Prompt --> Local Xenbook LLM classifier --simple--> Unified Memory --> Xenbook LLM generation --> Voice/Text  
-                                            |                                                                  ^  
-                                         complex        _______________________________________________________|
-                                            |           |
-                                            v           |
-                                        LOQ Reason/Action Loop <==> Tools
-
+                                            |         
+                                         complex
+                                            |           
+                                            v           
+                                        LOQ Reason/Action Loop <==> Tools --> Voice/Text
 
 ### Unified Memory System
 
