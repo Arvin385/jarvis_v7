@@ -173,6 +173,41 @@ def _chat(base_url, model, prompt, system_prompt):
 
     return data["message"]["content"]
 
+def _chat_stream(base_url, model, prompt, system_prompt):
+    url = f"{base_url}/api/chat"
+
+    payload = {
+        "model": model,
+        "stream": True,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "options": {
+            "temperature": 0.7
+        }
+    }
+
+    with requests.post(url, json=payload, stream=True, timeout=120) as r:
+        r.raise_for_status()
+
+        for line in r.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+
+            try:
+                import json
+                data = json.loads(line)
+
+                if "message" in data and "content" in data["message"]:
+                    token = data["message"]["content"]
+                    if token:
+                        yield token
+
+            except Exception:
+                continue
+
+    print()  
 
 def generate_xenbook(prompt: str, system: str) -> str:
     print("xenbook:")
@@ -194,6 +229,13 @@ def generate_local(prompt: str,  system: str) -> str:
         model = PHONE_MODEL
     print(model)
     return _chat(LOCAL_URL, model, prompt, system)
+
+def generate_stream(prompt: str, system: str):
+    print("Stream:")
+
+    print(XENBOOK_MODEL)
+
+    yield from _chat_stream(LOQ_URL, XENBOOK_MODEL, prompt, system)
 
 import json
 import re
