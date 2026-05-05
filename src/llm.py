@@ -33,8 +33,11 @@
 #     print("\nloq:")
 #     print(response['message']['content'])   
 
-import requests
+import json
 import os
+import re
+
+import requests
 
 XENBOOK_URL = os.getenv("XENBOOK_URL", "http://100.100.22.99:11434")
 PHONE_URL = os.getenv("PHONE_URL", "http://100.97.33.1:11434")
@@ -95,64 +98,99 @@ Respond to the user now.
 )
 
 CLASSIFIER_PROMPT = (
-    """You are a strict routing classifier for a distributed AI system.
+"""You are a strict routing classifier for an AI agent system.
 
-Your task is to classify the user's request as either:
+Your task is to classify the user's request into exactly one of two modes:
+
 - SIMPLE
 - COMPLEX
 
-Return ONLY a valid JSON object:
-{"mode": "SIMPLE"} 
-or 
+Return ONLY valid JSON in one of these formats:
+{"mode": "SIMPLE"}
 {"mode": "COMPLEX"}
 
-Your response must be valid JSON parsable by json.loads() without preprocessing.
-No explanation. No extra text.
+No explanation. No extra text. Must be directly parsable by json.loads().
 
 ---
 
-Definitions:
+# CORE PRINCIPLE
 
-SIMPLE:
-- The final result of the user's query can be satisfied with a single, direct LLM response
-- Does NOT require multi-step reasoning, planning, or tool use
-- Does NOT require iterative refinement
-- Does NOT require access or information from sources or tools other than your pretrained data.
-  - Does not need access to email, internet, local files, communication, or terminal.
-- Examples:
-  - factual questions
-  - short explanations
-  - casual conversation
-  - basic instructions
-  - summarization
-
-COMPLEX:
-- Requires reasoning, planning, or multi-step thinking
-- Would benefit from deeper analysis or structured thinking
-- May require tools, decomposition, or multiple steps
-- Examples:
-  - requiring tangible interaction with the internet, local device, or cloud. 
-  - Sending emails, accessing local or cloud files, intra-device and inter-device communication. 
-  - designing systems or architectures
-  - debugging non-trivial issues
-  - strategy, optimization, or tradeoff analysis
-  - long-form structured outputs
+Classify based on whether the request requires:
+(1) deep multi-step reasoning OR
+(2) external tool execution OR
+(3) interactive system/browser control
 
 ---
 
-Rules:
-- Ignore style, tone, or personality
-- Focus ONLY on task complexity
-- Do NOT consider latency or device constraints
-- Always output valid JSON
+# SIMPLE
+
+Use SIMPLE if the request can be answered directly in a single LLM response without:
+- planning or decomposition
+- tool usage
+- external interaction
+- iterative steps
+- system manipulation
+
+Examples:
+- factual questions ("What is recursion?")
+- definitions and explanations
+- summarization
+- rewriting text
+- casual conversation
+- basic instructions or advice
+- simple comparisons that do not require tools or computation
 
 ---
 
-User input will be provided next."""
+# COMPLEX
 
+Use COMPLEX if ANY of the following are required:
+
+## 1. Deep reasoning
+- multi-step problem solving
+- debugging
+- planning or decomposition
+- optimization or tradeoffs
+- system design or architecture
+
+## 2. Terminal execution (system interaction)
+- running shell commands
+- file system operations
+- code execution or environment manipulation
+- debugging runtime/system issues
+
+## 3. Browser automation (Playwright tool)
+- searching the web
+- navigating websites
+- clicking, scraping, or interacting with pages
+- retrieving live or dynamic information
+
+## 4. Any multi-step task that may require:
+- chaining actions across tools
+- maintaining state across steps
+- iterative refinement
+
+Examples:
+- "open a website and extract information"
+- "run a command to check system status"
+- "debug why my code is failing"
+- "find and summarize information from the web"
+- "send an email"
+- "compare live prices or current data"
+
+---
+
+# RULES
+
+- If uncertain → choose COMPLEX
+- Never consider tone, length, or writing style
+- Do NOT assume tool availability for SIMPLE
+- COMPLEX = anything that goes beyond single-response generation
+- Output MUST be valid JSON only
+"""
 )
 
-def _chat(base_url, model, prompt, system_prompt):
+def _chat(base_url, model, prompt, system_prompt, temperature=0.7):
     url = f"{base_url}/api/chat"
 
     payload = {
@@ -163,8 +201,8 @@ def _chat(base_url, model, prompt, system_prompt):
             {"role": "user", "content": prompt},
         ],
         "options": {
-            "temperature": 0.7
-        }
+            "temperature": temperature,
+        },
     }
 
     r = requests.post(url, json=payload, timeout=120)
@@ -217,8 +255,201 @@ def generate_phone(prompt: str, system: str) -> str:
     print("phone:")
     return _chat(PHONE_URL, PHONE_MODEL, prompt, system)
 
-def generate_loq(prompt: str,  system: str) -> str:
-    print("loq:")
+def generate_loq(
+    prompt: str,
+    system: str,
+    temperature: float | None = None,
+    trace_label: str = "loq:",
+) -> str:
+    if trace_label:
+        print(trace_label)
+    t = 0.7 if temperature is None else temperature
+    return _chat(LOQ_URL, LOQ_MODEL, prompt, system, temperature=t)
+
+
+def _first_balanced_brace_block(text: str) -> str | None:
+    """Return substring from first '{' through its matching '}', respecting strings."""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        i += 1
+    return None
+
+
+def _json_quote_body_as_string(body: str) -> str:
+    """Decode a substring that came from inside a JSON string (JSON escape rules)."""
+    if not body:
+        return ""
+    try:
+        return json.loads(f'"{body}"')
+    except json.JSONDecodeError:
+        return body
+
+
+def _fallback_parse_agent_payload(stripped: str) -> dict | None:
+    """
+    Recover agent steps when JSON is truncated (common under load) or sloppy.
+    """
+    dm = re.search(r'"done"\s*:\s*(true|false)\b', stripped, re.I)
+    if not dm:
+        return None
+    done = dm.group(1).lower() == "true"
+    if done:
+        fm = re.search(
+            r'"final_answer"\s*:\s*"((?:[^"\\]|\\.)*)"\s*',
+            stripped,
+            re.DOTALL,
+        )
+        fa = ""
+        if fm:
+            fa = _json_quote_body_as_string(fm.group(1))
+        return {"done": True, "final_answer": fa}
+
+    verbs = "|".join(
+        (
+            "query",
+            "get_links",
+            "get_text",
+            "click_text",
+            "goto_url",
+            "open_external",
+            "run_command",
+            "send_email",
+            "list_messages",
+            "get_message",
+        )
+    )
+    verb_iters = list(
+        re.finditer(rf'"action"\s*:\s*"({verbs})"', stripped, flags=re.I)
+    )
+    inner_verb = verb_iters[-1].group(1).lower() if verb_iters else None
+
+    tm = re.search(r'"tool"\s*:\s*"([^"]+)"', stripped)
+    gmail_verbs = {"send_email", "list_messages", "get_message"}
+    if tm:
+        raw_tool = tm.group(1).strip().lower()
+        if "terminal" in raw_tool or raw_tool.startswith("shell"):
+            tool = "terminal"
+        elif "gmail" in raw_tool:
+            tool = "gmail"
+        else:
+            tool = "browser"
+    else:
+        tool = "browser"
+
+    params: dict = {}
+
+    qm = re.search(r'"query"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped, re.DOTALL)
+    if qm:
+        params["query"] = _json_quote_body_as_string(qm.group(1))
+
+    xm = re.search(r'"click_text"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped, re.DOTALL)
+    if xm:
+        params["click_text"] = _json_quote_body_as_string(xm.group(1))
+
+    um = re.search(r'"url"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped, re.DOTALL)
+    if not um:
+        um = re.search(r'"url"\s*:\s*"([^"\n]*)', stripped)
+    if um:
+        params["url"] = um.group(1)
+
+    cm = re.search(r'"command"\s*:\s*"((?:[^"\\]|\\.)*)"', stripped, re.DOTALL)
+    if cm:
+        params["command"] = _json_quote_body_as_string(cm.group(1))
+
+    thought = ""
+    thm = re.search(
+        r'"thought"\s*:\s*"((?:[^"\\]|\\.)*)"',
+        stripped,
+        re.DOTALL,
+    )
+    if thm:
+        thought = _json_quote_body_as_string(thm.group(1))
+
+    if inner_verb is None:
+        if "query" in params:
+            inner_verb = "query"
+        elif "url" in params:
+            inner_verb = "goto_url"
+        elif "click_text" in params:
+            inner_verb = "click_text"
+        elif "command" in params:
+            inner_verb = "run_command"
+            tool = "terminal"
+        else:
+            # Avoid silently forcing browser/get_text when salvage has no real action.
+            return None
+
+    if inner_verb == "run_command" and tool != "terminal":
+        tool = "terminal"
+    if inner_verb in gmail_verbs and tool != "gmail":
+        tool = "gmail"
+
+    return {
+        "done": False,
+        "thought": thought,
+        "action": {
+            "tool": tool,
+            "action": inner_verb,
+            "parameters": params,
+        },
+    }
+
+
+def parse_agent_json(raw: str) -> dict:
+    """Parse agent step JSON when the model wraps it in prose or markdown fences."""
+    if not raw or not str(raw).strip():
+        raise ValueError("Agent returned empty response")
+
+    stripped = raw.strip()
+
+    blobs: list[str] = []
+
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", stripped)
+    if fenced:
+        blobs.append(fenced.group(1).strip())
+    blobs.append(stripped)
+
+    for blob in blobs:
+        fragment = _first_balanced_brace_block(blob)
+        if fragment is None:
+            continue
+        try:
+            obj = json.loads(fragment)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "done" in obj:
+            return obj
+
+    salvage = _fallback_parse_agent_payload(stripped)
+    if salvage is not None:
+        return salvage
+
+    raise ValueError(f"No valid agent JSON object (expected key 'done'): {stripped[:500]!r}…")
+
+def generate_cli(prompt: str,  system: str) -> str:
     return _chat(LOQ_URL, LOQ_MODEL, prompt, system)
 
 def generate_local(prompt: str,  system: str) -> str:
@@ -237,8 +468,6 @@ def generate_stream(prompt: str, system: str):
 
     yield from _chat_stream(LOQ_URL, XENBOOK_MODEL, prompt, system)
 
-import json
-import re
 
 def parse_classifier_output(raw: str) -> str:
     """

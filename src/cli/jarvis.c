@@ -8,6 +8,7 @@
 #define JARVIS_MAX_INPUT 4096
 #define JSON_SIZE 8192
 
+int debug = 0;
 // -------------------------
 // Escape JSON safely
 // -------------------------
@@ -187,8 +188,9 @@ int main(int argc, char *argv[]) {
         safe_prompt
     );
 
-    printf("\nJARVIS JSON:\n%s\n\n", json);
-
+    if (debug == 1) {
+      printf("\nJARVIS JSON:\n%s\n\n", json);
+    }
     // -------------------------
     // Execute Python
     // -------------------------
